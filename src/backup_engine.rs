@@ -1,3 +1,5 @@
+use indicatif::{ProgressBar, ProgressStyle};
+
 pub struct BackupEngine {
     
 }
@@ -58,7 +60,24 @@ impl BackupEngine {
                 return None;
             }
 
-            self.copy_dir_recursive(source, destination_path.to_str().unwrap());
+            let total_files = self.count_files_recursive(source_path);
+            let progress_bar = ProgressBar::new(total_files);
+            progress_bar.set_style(
+                ProgressStyle::with_template(
+                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}",
+                )
+                .unwrap()
+                .progress_chars("=>-"),
+            );
+
+            if let Err(err) =
+                self.copy_dir_recursive(source_path, &destination_path, source_path, &progress_bar)
+            {
+                progress_bar.abandon_with_message(format!("Backup failed: {err}"));
+                return None;
+            }
+
+            progress_bar.finish_with_message("Backup copy complete".to_string());
             Some(destination_path.to_string_lossy().to_string())
         } else {
             let source_file_name = source_path.file_name().unwrap().to_str().unwrap();
@@ -103,22 +122,42 @@ impl BackupEngine {
         }
     }
 
-    fn copy_dir_recursive(&self, source: &str, destination: &str) {
-        for entry in std::fs::read_dir(source).unwrap() {
-            let entry = entry.unwrap();
+    fn count_files_recursive(&self, source: &std::path::Path) -> u64 {
+        walkdir::WalkDir::new(source)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_file())
+            .count() as u64
+    }
+
+    fn copy_dir_recursive(
+        &self,
+        source: &std::path::Path,
+        destination: &std::path::Path,
+        root_source: &std::path::Path,
+        progress_bar: &ProgressBar,
+    ) -> std::io::Result<()> {
+        for entry_result in std::fs::read_dir(source)? {
+            let entry = entry_result?;
             let path = entry.path();
             let file_name = entry.file_name();
-            let dest_path = std::path::Path::new(destination).join(file_name);
+            let dest_path = destination.join(file_name);
 
             if path.is_file() {
-                std::fs::copy(&path, &dest_path).unwrap();
+                let display_path = path
+                    .strip_prefix(root_source)
+                    .unwrap_or(path.as_path())
+                    .to_string_lossy()
+                    .to_string();
+                progress_bar.set_message(format!("Copying {display_path}"));
+                std::fs::copy(&path, &dest_path)?;
+                progress_bar.inc(1);
             } else if path.is_dir() {
-                if let Err(err) = std::fs::create_dir_all(&dest_path) {
-                    println!("Failed to create directory: {err}");
-                    continue;
-                }
-                self.copy_dir_recursive(path.to_str().unwrap(), dest_path.to_str().unwrap());
+                std::fs::create_dir_all(&dest_path)?;
+                self.copy_dir_recursive(&path, &dest_path, root_source, progress_bar)?;
             }
         }
+
+        Ok(())
     }
 }

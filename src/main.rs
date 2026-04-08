@@ -11,7 +11,7 @@ fn main() {
     }
 
     if args[0] == "-v" || args[0] == "-version" && args.len() == 1 {
-        print!("Backup Tracker version 0.7.0");
+        print!("Backup Tracker version 0.10.0");
     } else if args[0] == "-track" || args[0] == "-t" && args.len() == 3 {
         let backup_engine = backup_engine::BackupEngine::new();
         let tracker = local_tracker::LocalTracker::new();

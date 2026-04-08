@@ -15,7 +15,7 @@ impl FileHasher {
         let file = File::open(file_path).ok()?;
         let mut reader = BufReader::new(file);
         let mut hasher = Sha256::new();
-        let mut buffer = [0; 1024];
+        let mut buffer = [0; 64 * 1024];
 
         loop {
             let bytes_read = reader.read(&mut buffer).ok()?;
