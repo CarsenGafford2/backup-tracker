@@ -63,6 +63,7 @@ impl LocalTracker {
         progress_bar.set_message("Hashing files in parallel".to_string());
 
         let source_root = Self::normalize_location(folder, folder_path);
+        let backup_root = Self::normalize_location(backup_folder, backup_folder_path);
         let tracked_entries: Vec<(String, serde_json::Value)> = files
             .par_iter()
             .filter_map(|file_path| {
@@ -75,7 +76,12 @@ impl LocalTracker {
                 };
 
                 let backup_location = backup_folder.join(relative_path);
-                let result = Self::build_tracked_entry_with_root(file_path, &backup_location, &source_root);
+                let result = Self::build_tracked_entry_with_root(
+                    file_path,
+                    &backup_location,
+                    &source_root,
+                    &backup_root,
+                );
                 progress_bar.inc(1);
                 result
             })
@@ -132,6 +138,7 @@ impl LocalTracker {
         file_path: &Path,
         backup_location: &Path,
         source_root: &str,
+        backup_root: &str,
     ) -> Option<(String, serde_json::Value)> {
         if !file_path.exists() || !file_path.is_file() {
             return None;
@@ -151,6 +158,7 @@ impl LocalTracker {
             "hash": source_hash,
             "location": source_location,
             "backup_location": backup_location_string,
+            "backup_root": backup_root,
             "backup_hash": backup_hash,
             "source_root": source_root,
         });
@@ -225,6 +233,13 @@ impl LocalTracker {
                 let normalized = Self::strip_windows_extended_prefix(backup_location);
                 if normalized != backup_location {
                     entry["backup_location"] = serde_json::Value::String(normalized);
+                }
+            }
+
+            if let Some(backup_root) = entry.get("backup_root").and_then(|value| value.as_str()) {
+                let normalized = Self::strip_windows_extended_prefix(backup_root);
+                if normalized != backup_root {
+                    entry["backup_root"] = serde_json::Value::String(normalized);
                 }
             }
         }
@@ -496,7 +511,7 @@ impl LocalTracker {
 
     fn scan_and_backup_new_files(&self, tracked_files: &mut Vec<serde_json::Value>) -> bool {
         // Build a map of source_root to backup root and collect all unique source roots
-        let mut source_root_info: HashMap<String, (String, String)> = HashMap::new();
+        let mut source_root_info: HashMap<String, String> = HashMap::new();
 
         for entry in tracked_files.iter() {
             if let (Some(source_root), Some(location), Some(backup_location)) = (
@@ -505,36 +520,18 @@ impl LocalTracker {
                 entry.get("backup_location").and_then(|v| v.as_str()),
             ) {
                 let source_root_normalized = Self::strip_windows_extended_prefix(source_root);
-                
-                // Extract the backup root by removing the relative path
-                if let Ok(source_path) = std::fs::canonicalize(location) {
-                    if let Ok(source_root_path) = std::fs::canonicalize(&source_root_normalized) {
-                        if let Ok(rel_path) = source_path.strip_prefix(&source_root_path) {
-                            if let Ok(backup_path) = std::fs::canonicalize(backup_location) {
-                                if let Some(backup_parent) = backup_path.parent() {
-                                    for _ in 0..rel_path.components().count() - 1 {
-                                        if let Some(parent) = backup_parent.parent() {
-                                            let backup_root = parent.to_string_lossy().to_string();
-                                            source_root_info.insert(
-                                                source_root_normalized.clone(),
-                                                (source_root_normalized.clone(), backup_root),
-                                            );
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
 
-                source_root_info.entry(source_root_normalized).or_insert_with(|| {
-                    // Fallback: extract backup root from first entry of this source_root
-                    (
-                        source_root.to_string(),
-                        Self::get_backup_root_for_source(backup_location, location, source_root),
-                    )
-                });
+                let backup_root = entry
+                    .get("backup_root")
+                    .and_then(|v| v.as_str())
+                    .map(Self::strip_windows_extended_prefix)
+                    .unwrap_or_else(|| {
+                        Self::get_backup_root_for_source(backup_location, location, source_root)
+                    });
+
+                source_root_info
+                    .entry(source_root_normalized)
+                    .or_insert(backup_root);
             }
         }
 
@@ -544,7 +541,7 @@ impl LocalTracker {
 
         let mut new_files_found = false;
 
-        for (source_root, (_source_root_str, backup_root)) in source_root_info {
+        for (source_root, backup_root) in source_root_info {
             println!("Scanning for new files in: {}", source_root);
 
             let source_path = Path::new(&source_root);
@@ -619,7 +616,12 @@ impl LocalTracker {
                     }
 
                     // Add to tracked files
-                    if let Some((_location, file_info)) = Self::build_tracked_entry_with_root(&new_file, &backup_location, &source_root) {
+                    if let Some((_location, file_info)) = Self::build_tracked_entry_with_root(
+                        &new_file,
+                        &backup_location,
+                        &source_root,
+                        &backup_root,
+                    ) {
                         tracked_files.push(file_info);
                         new_files_found = true;
                     }
